@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+.env
+.git/
+data/
+reports/
+screenshots/
+secur_sn_codex_context_docs/

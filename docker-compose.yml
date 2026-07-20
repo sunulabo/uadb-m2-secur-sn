@@ -1,0 +1,521 @@
+name: secur-sn
+
+services:
+  kafka:
+    image: ${KAFKA_IMAGE:-apache/kafka:4.3.1}
+    container_name: secur_kafka
+    hostname: kafka
+    user: "0:0"
+    environment:
+      CLUSTER_ID: SecurSnKraftCluster001
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093,PLAINTEXT_HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS: ${KAFKA_INTERNAL_TOPIC_PARTITIONS:-1}
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_NUM_PARTITIONS: ${KAFKA_INTERNAL_TOPIC_PARTITIONS:-1}
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_NUM_PARTITIONS: ${KAFKA_INTERNAL_TOPIC_PARTITIONS:-1}
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_single_data:/tmp/kraft-combined-logs
+    cpus: ${KAFKA_CPU_LIMIT:-0.75}
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '>/dev/tcp/localhost/19092'"]
+      interval: 5s
+      timeout: 5s
+      retries: 120
+      start_period: 30s
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: secur_kafka_ui
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_CLUSTERS_0_NAME: secur-sn
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+    ports:
+      - "8088:8080"
+    profiles: ["ui"]
+
+  kafka-init:
+    build:
+      context: .
+      dockerfile: services/kafka_init/Dockerfile
+    image: secur-sn/kafka-init:local
+    container_name: secur_kafka_init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_INTERNAL_BOOTSTRAP_SERVERS: kafka:19092
+      KAFKA_READY_TIMEOUT_SECONDS: ${KAFKA_READY_TIMEOUT_SECONDS:-600}
+      KAFKA_TOPIC_PARTITIONS: "3"
+      KAFKA_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TOPIC_MIN_ISR: "1"
+      KAFKA_TOPIC_RETENTION_MS: ${KAFKA_TOPIC_RETENTION_MS:-604800000}
+      KAFKA_TOPICS: secur_incidents_raw,secur_meteo,secur_incidents_dlq,secur_meteo_dlq
+    restart: "no"
+
+  minio:
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:latest}
+    container_name: secur_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-securadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-securadmin123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    build:
+      context: .
+      dockerfile: services/minio_init/Dockerfile
+    image: secur-sn/minio-init:local
+    container_name: secur_minio_init
+    depends_on:
+      - minio
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-securadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-securadmin123}
+      MINIO_LANDING_BUCKET: ${MINIO_LANDING_BUCKET:-secur-sn-landing}
+      MINIO_QUARANTINE_BUCKET: ${MINIO_QUARANTINE_BUCKET:-secur-sn-quarantine}
+    restart: "no"
+
+  nifi-work-init:
+    build:
+      context: .
+      dockerfile: services/nifi_work_init/Dockerfile
+    image: secur-sn/nifi-work-init:local
+    container_name: secur_nifi_work_init
+    user: "0:0"
+    volumes:
+      - nifi_work_cache:/work
+    restart: "no"
+
+  nifi:
+    image: apache/nifi:1.25.0
+    container_name: secur_nifi
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      nifi-work-init:
+        condition: service_completed_successfully
+      hbase:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-securadmin}
+      AWS_REGION: ${MINIO_REGION:-us-east-1}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-securadmin123}
+      NIFI_WEB_HTTP_HOST: 0.0.0.0
+      NIFI_WEB_HTTP_PORT: 8081
+      SINGLE_USER_CREDENTIALS_USERNAME: admin
+      SINGLE_USER_CREDENTIALS_PASSWORD: securSnDemo12345
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./nifi/flow-definitions:/opt/nifi/nifi-current/conf/flow-definitions
+      - ./data/samples:/opt/nifi/nifi-current/data/samples
+      - ./data/nifi:/opt/nifi/nifi-current/data/secur-sn
+      - nifi_work_cache:/opt/nifi/nifi-current/work
+    cpus: ${NIFI_CPU_LIMIT:-1.0}
+
+  nifi-init:
+    build:
+      context: .
+      dockerfile: services/nifi_init/Dockerfile
+    image: secur-sn/nifi-init:local
+    container_name: secur_nifi_init
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      nifi:
+        condition: service_started
+    environment:
+      NIFI_API_URL: http://nifi:8081/nifi-api
+      KAFKA_INTERNAL_BOOTSTRAP_SERVERS: kafka:19092
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_LANDING_BUCKET: ${MINIO_LANDING_BUCKET:-secur-sn-landing}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      NIFI_READY_TIMEOUT_SECONDS: ${NIFI_READY_TIMEOUT_SECONDS:-1200}
+      NIFI_FLOW_TIMEOUT_SECONDS: ${NIFI_FLOW_TIMEOUT_SECONDS:-900}
+      NIFI_FLOW_RETRY_SECONDS: ${NIFI_FLOW_RETRY_SECONDS:-10}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-securadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-securadmin123}
+    restart: on-failure
+
+  field-simulator:
+    build:
+      context: .
+      dockerfile: services/field_simulator/Dockerfile
+    image: secur-sn/field-simulator:local
+    container_name: secur_field_simulator
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      nifi-init:
+        condition: service_completed_successfully
+    environment:
+      FIELD_SIMULATOR_INTERVAL_SECONDS: ${FIELD_SIMULATOR_INTERVAL_SECONDS:-20}
+      FIELD_SIMULATOR_MAX_BATCHES: ${FIELD_SIMULATOR_MAX_BATCHES:-0}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_LANDING_BUCKET: ${MINIO_LANDING_BUCKET:-secur-sn-landing}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-securadmin123}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-securadmin}
+    restart: unless-stopped
+
+  spark-streaming:
+    build:
+      context: .
+      dockerfile: services/spark_runtime/Dockerfile
+    image: ${SPARK_RUNTIME_IMAGE:-secur-sn/spark-runtime:local}
+    container_name: secur_spark_streaming
+    user: "0:0"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      hbase:
+        condition: service_healthy
+      hdfs-init:
+        condition: service_completed_successfully
+    entrypoint:
+      - /opt/bitnami/spark/bin/spark-submit
+    command:
+      - --master
+      - ${SPARK_MASTER:-local[1]}
+      - --driver-memory
+      - ${SPARK_DRIVER_MEMORY:-1G}
+      - --conf
+      - spark.driver.bindAddress=0.0.0.0
+      - --conf
+      - spark.driver.host=spark-streaming
+      - --conf
+      - spark.ui.port=4040
+      - --conf
+      - spark.executorEnv.PYTHONPATH=/opt/secur-sn
+      - /opt/secur-sn/spark/streaming_secur_sn.py
+    environment:
+      HADOOP_CONF_DIR: /opt/bitnami/spark/conf/hadoop
+      HBASE_DOCKER_HOST: hbase
+      HBASE_READY_TIMEOUT_SECONDS: ${HBASE_READY_TIMEOUT_SECONDS:-600}
+      HBASE_REST_URL: ${HBASE_REST_URL:-http://hbase:8080}
+      HBASE_REST_TIMEOUT_SECONDS: ${HBASE_REST_TIMEOUT_SECONDS:-30}
+      HBASE_RETRY_SECONDS: ${HBASE_RETRY_SECONDS:-5}
+      HBASE_THRIFT_PORT: ${HBASE_THRIFT_PORT:-9090}
+      HDFS_GOLD_ROOT: ${HDFS_GOLD_ROOT:-/secur-sn/gold}
+      HDFS_NAMENODE_URI: ${HDFS_NAMENODE_URI:-hdfs://namenode:8020}
+      KAFKA_STREAMING_BOOTSTRAP_SERVERS: kafka:19092
+      PYSPARK_PYTHON: /usr/bin/python3
+      PYTHONPATH: /opt/secur-sn
+      SECUR_SECRET_SALT: ${SECUR_SECRET_SALT:-change_me_for_demo}
+      SPARK_CHECKPOINT_ROOT: ${SPARK_CHECKPOINT_ROOT:-/opt/secur-sn/data/checkpoints}
+      SPARK_HOTSPOT_WINDOW: ${SPARK_HOTSPOT_WINDOW:-5 minutes}
+      SPARK_MAX_OFFSETS_PER_TRIGGER: ${SPARK_MAX_OFFSETS_PER_TRIGGER:-120}
+      SPARK_STARTING_OFFSETS: ${SPARK_STARTING_OFFSETS:-earliest}
+      SPARK_TRIGGER_INTERVAL: ${SPARK_TRIGGER_INTERVAL:-60 seconds}
+      SPARK_WATERMARK_DELAY: ${SPARK_WATERMARK_DELAY:-2 minutes}
+    ports:
+      - "4040:4040"
+    restart: unless-stopped
+    volumes:
+      - ./:/opt/secur-sn
+      - ./hadoop/conf:/opt/bitnami/spark/conf/hadoop:ro
+      - spark_single_checkpoints:/opt/secur-sn/data/checkpoints
+    cpus: ${SPARK_CPU_LIMIT:-1.0}
+
+  namenode:
+    build:
+      context: .
+      dockerfile: services/hadoop_runtime/Dockerfile
+    image: secur-sn/hadoop-runtime:local
+    container_name: secur_namenode
+    environment:
+      HDFS_ROLE: namenode
+    ports:
+      - "8020:8020"
+      - "9870:9870"
+    volumes:
+      - hdfs_namenode_data:/hadoop/dfs/name
+
+  datanode-1:
+    image: secur-sn/hadoop-runtime:local
+    container_name: secur_datanode_1
+    depends_on:
+      - namenode
+    environment:
+      HDFS_ROLE: datanode
+    volumes:
+      - hdfs_datanode_1_data:/hadoop/dfs/data
+
+  datanode-2:
+    image: secur-sn/hadoop-runtime:local
+    container_name: secur_datanode_2
+    depends_on:
+      - namenode
+    environment:
+      HDFS_ROLE: datanode
+    volumes:
+      - hdfs_datanode_2_data:/hadoop/dfs/data
+
+  hdfs-init:
+    build:
+      context: .
+      dockerfile: services/hdfs_init/Dockerfile
+    image: secur-sn/hdfs-init:local
+    container_name: secur_hdfs_init
+    depends_on:
+      - namenode
+      - datanode-1
+      - datanode-2
+    environment:
+      HDFS_READY_TIMEOUT_SECONDS: ${HDFS_READY_TIMEOUT_SECONDS:-600}
+      HDFS_REQUIRED_DATANODES: ${HDFS_REQUIRED_DATANODES:-2}
+    restart: "no"
+
+  hbase:
+    image: harisekhon/hbase:2.1
+    container_name: secur_hbase
+    environment:
+      HBASE_HEAPSIZE: ${HBASE_HEAPSIZE:-256}
+    ports:
+      - "16010:16010"
+      - "9090:9090"
+    volumes:
+      - hbase_data:/hbase-data
+    cpus: ${HBASE_CPU_LIMIT:-0.75}
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'host=$$(hostname -i); >/dev/tcp/$$host/16000 && >/dev/tcp/127.0.0.1/9090'"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  hive-postgres:
+    image: postgres:16-alpine
+    container_name: secur_hive_postgres
+    environment:
+      POSTGRES_DB: ${HIVE_METASTORE_DB:-hive_metastore}
+      POSTGRES_USER: ${HIVE_METASTORE_USER:-hive}
+      POSTGRES_PASSWORD: ${HIVE_METASTORE_PASSWORD:-hive_metastore_password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - hive_postgres_data:/var/lib/postgresql/data
+
+  hive-metastore:
+    build:
+      context: .
+      dockerfile: services/hive_runtime/Dockerfile
+    image: secur-sn/hive-runtime:local
+    container_name: secur_hive_metastore
+    depends_on:
+      hdfs-init:
+        condition: service_completed_successfully
+      hive-postgres:
+        condition: service_healthy
+    environment:
+      DB_DRIVER: postgres
+      HIVE_CUSTOM_CONF_DIR: /hive_custom_conf
+      IS_RESUME: "false"
+      SERVICE_NAME: metastore
+      SERVICE_OPTS: >-
+        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-postgres:5432/${HIVE_METASTORE_DB:-hive_metastore}
+        -Djavax.jdo.option.ConnectionUserName=${HIVE_METASTORE_USER:-hive}
+        -Djavax.jdo.option.ConnectionPassword=${HIVE_METASTORE_PASSWORD:-hive_metastore_password}
+    ports:
+      - "9083:9083"
+    cpus: ${HIVE_METASTORE_CPU_LIMIT:-0.5}
+
+  hive-server:
+    image: secur-sn/hive-runtime:local
+    container_name: secur_hive_server
+    depends_on:
+      hive-metastore:
+        condition: service_started
+    environment:
+      HIVE_CUSTOM_CONF_DIR: /hive_custom_conf
+      IS_RESUME: "true"
+      SERVICE_NAME: hiveserver2
+      SERVICE_OPTS: >-
+        -Dhive.metastore.uris=thrift://hive-metastore:9083
+        ${HIVE_SERVICE_OPTS:--Xmx512m}
+    ports:
+      - "10000:10000"
+      - "10002:10002"
+    cpus: ${HIVE_SERVER_CPU_LIMIT:-0.5}
+
+  hive-init:
+    build:
+      context: .
+      dockerfile: services/hive_init/Dockerfile
+    image: secur-sn/hive-init:local
+    container_name: secur_hive_init
+    depends_on:
+      hive-server:
+        condition: service_started
+    environment:
+      HDFS_GOLD_ROOT: ${HDFS_GOLD_ROOT:-/secur-sn/gold}
+      HDFS_NAMENODE_URI: ${HDFS_NAMENODE_URI:-hdfs://namenode:8020}
+      HIVE_CATALOG_REFRESH_SECONDS: ${HIVE_CATALOG_REFRESH_SECONDS:-60}
+      HIVE_DOCKER_HOST: hive-server
+      HIVE_PORT: 10000
+    restart: unless-stopped
+
+  platform-ready:
+    build:
+      context: .
+      dockerfile: services/platform_ready/Dockerfile
+    image: secur-sn/platform-ready:local
+    container_name: secur_platform_ready
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      nifi-init:
+        condition: service_completed_successfully
+      field-simulator:
+        condition: service_started
+      spark-streaming:
+        condition: service_started
+      hdfs-init:
+        condition: service_completed_successfully
+      hbase:
+        condition: service_healthy
+      hive-postgres:
+        condition: service_healthy
+      hive-metastore:
+        condition: service_started
+      hive-server:
+        condition: service_started
+      hive-init:
+        condition: service_started
+    environment:
+      PLATFORM_READY_RETRY_SECONDS: ${PLATFORM_READY_RETRY_SECONDS:-5}
+      PLATFORM_READY_TIMEOUT_SECONDS: ${PLATFORM_READY_TIMEOUT_SECONDS:-1200}
+    restart: "no"
+    volumes:
+      - ./data:/opt/secur-sn/data:ro
+
+  airflow-postgres:
+    image: postgres:16-alpine
+    container_name: secur_airflow_postgres
+    environment:
+      POSTGRES_DB: ${AIRFLOW_DB_NAME:-airflow}
+      POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    profiles: ["airflow", "ui"]
+
+  airflow-db-init:
+    image: apache/airflow:2.9.3
+    container_name: secur_airflow_db_init
+    user: "${AIRFLOW_UID:-50000}:0"
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+      PYTHONPATH: /opt/airflow/secur-sn
+    command: >
+      bash -c "set -e;
+      airflow db migrate;
+      airflow users create --username admin --password admin --firstname Secur --lastname SN --role Admin --email admin@example.com || true"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./:/opt/airflow/secur-sn
+    profiles: ["airflow", "ui"]
+
+  airflow-webserver:
+    image: apache/airflow:2.9.3
+    container_name: secur_airflow_webserver
+    user: "${AIRFLOW_UID:-50000}:0"
+    depends_on:
+      airflow-db-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+      AIRFLOW__WEBSERVER__WORKERS: ${AIRFLOW_WEBSERVER_WORKERS:-1}
+      AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: ${AIRFLOW_WEBSERVER_WORKER_TIMEOUT:-300}
+      PYTHONPATH: /opt/airflow/secur-sn
+    command: webserver
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./:/opt/airflow/secur-sn
+    restart: unless-stopped
+    cpus: ${AIRFLOW_WEBSERVER_CPU_LIMIT:-0.5}
+    profiles: ["ui"]
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.3
+    container_name: secur_airflow_scheduler
+    user: "${AIRFLOW_UID:-50000}:0"
+    depends_on:
+      airflow-db-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+      PYTHONPATH: /opt/airflow/secur-sn
+    command: scheduler
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./:/opt/airflow/secur-sn
+    restart: unless-stopped
+    cpus: ${AIRFLOW_SCHEDULER_CPU_LIMIT:-0.5}
+    profiles: ["airflow"]
+
+volumes:
+  kafka_single_data:
+  minio_data:
+  hdfs_namenode_data:
+  hdfs_datanode_1_data:
+  hdfs_datanode_2_data:
+  hbase_data:
+  hive_postgres_data:
+  airflow_postgres_data:
+  spark_single_checkpoints:
+  nifi_work_cache:

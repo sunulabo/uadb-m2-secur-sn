@@ -1,0 +1,55 @@
+{
+  "flowName": "Secur_SN_Ingestion",
+  "version": "1.0",
+  "description": "Flow NiFi demonstratif: sources GAMA/CETUD/meteo vers Kafka Secur-SN.",
+  "processGroups": [
+    {
+      "name": "Secur_SN_Ingestion",
+      "processors": [
+        {
+          "name": "Generate GAMA Incidents",
+          "type": "GenerateFlowFile",
+          "source": "GAMA",
+          "outputTopic": "secur_incidents_raw",
+          "sampleFile": "/opt/nifi/nifi-current/data/samples/incidents_sample.jsonl"
+        },
+        {
+          "name": "Validate Incident JSON",
+          "type": "ValidateRecord",
+          "schema": "incident_id,nom_victime,tel_temoin,zone,type_incident,type_vehicule,latitude,longitude,nb_victimes,heure,facteur_heure,timestamp"
+        },
+        {
+          "name": "Publish Incidents To Kafka",
+          "type": "PublishKafkaRecord_2_6",
+          "topic": "secur_incidents_raw",
+          "bootstrapServers": "kafka:19092"
+        },
+        {
+          "name": "Generate METEO Observations",
+          "type": "GenerateFlowFile",
+          "source": "METEO",
+          "outputTopic": "secur_meteo",
+          "sampleFile": "/opt/nifi/nifi-current/data/samples/meteo_sample.jsonl"
+        },
+        {
+          "name": "Validate Meteo JSON",
+          "type": "ValidateRecord",
+          "schema": "zone,temperature,pluie_mm,visibilite,route_mouillee,timestamp"
+        },
+        {
+          "name": "Publish Meteo To Kafka",
+          "type": "PublishKafkaRecord_2_6",
+          "topic": "secur_meteo",
+          "bootstrapServers": "kafka:19092"
+        }
+      ],
+      "connections": [
+        ["Generate GAMA Incidents", "Validate Incident JSON"],
+        ["Validate Incident JSON", "Publish Incidents To Kafka"],
+        ["Generate METEO Observations", "Validate Meteo JSON"],
+        ["Validate Meteo JSON", "Publish Meteo To Kafka"]
+      ]
+    }
+  ],
+  "fallback": "Si PublishKafkaRecord_2_6 pose probleme, remplacer temporairement par LogAttribute et prouver Kafka via les producteurs Python."
+}

@@ -1,0 +1,40 @@
+# Secrets and local environments
+.env
+.env.local
+.venv/
+venv/
+env/
+
+# Python and editor caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.vscode/
+.DS_Store
+secur_sn_codex_context_docs/
+nifi/templates/
+
+# Runtime data. The NiFi sample fixtures remain versioned.
+data/raw/
+data/processed/
+data/checkpoints/
+data/dashboard/
+data/nifi/
+data/quarantine/
+data/runtime/
+
+# Generated reports and screenshots
+reports/*
+!reports/.gitkeep
+screenshots/*
+!screenshots/.gitkeep
+
+# Local Docker and Hadoop working directories
+*.log
+*.pid
+tmp/
+*.swp

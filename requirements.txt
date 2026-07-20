@@ -1,0 +1,13 @@
+pandas>=2.2.0
+pandera>=0.20.0
+pyspark==3.5.1
+kafka-python>=2.0.2
+happybase>=1.2.0
+thrift>=0.20.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+pillow>=10.0.0
+scikit-learn>=1.4.0
+numpy>=1.26.0
+duckdb>=1.0.0
+pytest>=8.0.0

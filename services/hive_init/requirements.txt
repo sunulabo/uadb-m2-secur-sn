@@ -1,0 +1,1 @@
+PyHive[hive_pure_sasl]>=0.7,<0.8
