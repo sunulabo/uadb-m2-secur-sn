@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: Georgia, Cambria, "Times New Roman", serif;
+  --color-ink: #14202b;
+  --color-muted: #71808c;
+  --color-paper: #f6f8f7;
+  --color-line: #d8e1e6;
+  --color-signal-green: #2f8f62;
+  --color-signal-orange: #c98322;
+  --color-signal-red: #c54b47;
+}
+
+@layer base {
+  body { @apply m-0 bg-paper font-sans text-ink antialiased; }
+}
+
+.leaflet-container { font: 12px Inter, ui-sans-serif, system-ui, sans-serif; }

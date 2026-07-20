@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import random
 from collections import defaultdict
@@ -62,6 +63,9 @@ VEHICLE_TYPES = [
     "CHARRETTE",
 ]
 
+GRID_CELL_SIZE_METERS = 2_000
+WEB_MERCATOR_RADIUS_METERS = 6_378_137
+
 
 def project_path(*parts: str) -> Path:
     """Retourne un chemin absolu dans le projet."""
@@ -97,6 +101,21 @@ def parse_timestamp(value: Any) -> datetime:
 def now_utc_iso() -> str:
     """Retourne l'heure UTC au format ISO stable."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def grid_2km_id(latitude: float, longitude: float) -> str:
+    """Retourne la cellule Web Mercator de 2 km contenant une coordonnee.
+
+    La projection metrique evite de confondre 2 km avec un nombre fixe de
+    degres. L'identifiant reste stable et ne contient aucune donnee PII.
+    """
+    lat = float(latitude)
+    lon = float(longitude)
+    if not (-85.0 < lat < 85.0 and -180.0 <= lon <= 180.0):
+        raise ValueError("Coordonnees invalides pour la grille 2 km")
+    x = WEB_MERCATOR_RADIUS_METERS * math.radians(lon)
+    y = WEB_MERCATOR_RADIUS_METERS * math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
+    return f"wm2km_{math.floor(x / GRID_CELL_SIZE_METERS)}_{math.floor(y / GRID_CELL_SIZE_METERS)}"
 
 
 def build_pandera_schema() -> Any:
@@ -323,6 +342,7 @@ def build_alert(record: Dict[str, Any], meteo: Optional[Dict[str, Any]] = None) 
         "type_vehicule": safe["type_vehicule"],
         "latitude": safe["latitude"],
         "longitude": safe["longitude"],
+        "grid_2km_id": grid_2km_id(safe["latitude"], safe["longitude"]),
         "nb_victimes": safe["nb_victimes"],
         "heure": safe["heure"],
         "timestamp": safe["timestamp"],
@@ -339,14 +359,17 @@ def build_alert(record: Dict[str, Any], meteo: Optional[Dict[str, Any]] = None) 
 
 
 def aggregate_alerts(alerts: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Agrege les alertes par zone pour les hot-spots."""
+    """Agrege les alertes par zone et cellule operationnelle de 2 km."""
     groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for alert in alerts:
         assert_no_pii(alert)
-        groups[str(alert["zone"])].append(alert)
+        key = f"{alert['zone']}:{alert.get('grid_2km_id') or grid_2km_id(alert['latitude'], alert['longitude'])}"
+        groups[key].append(alert)
 
     results: List[Dict[str, Any]] = []
-    for zone, rows in groups.items():
+    for group_key, rows in groups.items():
+        zone = str(rows[0]["zone"])
+        grid_id = str(rows[0].get("grid_2km_id") or grid_2km_id(rows[0]["latitude"], rows[0]["longitude"]))
         total_score = sum(float(row["score_risque"]) for row in rows)
         max_row = max(rows, key=lambda row: float(row["score_risque"]))
         nb_incidents = len(rows)
@@ -354,8 +377,9 @@ def aggregate_alerts(alerts: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         score_density = total_score * max(1, nb_incidents) / 3
         level = risk_level(score_density)
         hotspot = {
-            "hotspot_id": f"{zone}#{parse_timestamp(max_row['timestamp']).strftime('%Y%m%d%H')}",
+            "hotspot_id": f"ops#{grid_id}#{parse_timestamp(max_row['timestamp']).strftime('%Y%m%d%H')}",
             "zone": zone,
+            "grid_2km_id": grid_id,
             "latitude": round(sum(float(row["latitude"]) for row in rows) / nb_incidents, 6),
             "longitude": round(sum(float(row["longitude"]) for row in rows) / nb_incidents, 6),
             "nb_incidents": nb_incidents,

@@ -2,55 +2,37 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
-from pathlib import Path
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
-from airflow.operators.python import BranchPythonOperator
+from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 
-PROJECT_ROOT = Path("/opt/airflow/secur-sn")
-
-
 def choose_next_task() -> str:
-    """Branche vers retrain_model si trop de zones rouges sont detectees."""
-    path = PROJECT_ROOT / "data" / "processed" / "hotspots_fallback.jsonl"
-    red_count = 0
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if row.get("niveau_risque") == "ROUGE":
-                red_count += 1
-    return "retrain_model" if red_count >= 2 else "update_hotspots"
+    """Branche selon les cellules rouges calculees par la vue Hive 24 h."""
+    from hive.airflow_client import analytics_risk_summary
+
+    summary = analytics_risk_summary()
+    return "retrain_model" if summary["red_cells"] >= 2 else "update_hotspots"
 
 
 with DAG(
     dag_id="secur_sn_monitoring",
     start_date=datetime(2026, 1, 1),
-    schedule="@daily",
+    schedule="0 */2 * * *",
     catchup=False,
     tags=["secur-sn", "big-data", "hotspots", "privacy"],
 ) as dag:
     start = EmptyOperator(task_id="start")
 
-    generate_history = BashOperator(
-        task_id="generate_history",
-        bash_command="cd /opt/airflow/secur-sn && python producers/generate_batch_history.py --count 200",
-    )
+    generate_history = EmptyOperator(task_id="generate_history")
 
-    valider_fichiers_du_jour = BashOperator(
+    valider_fichiers_du_jour = PythonOperator(
         task_id="valider_fichiers_du_jour",
-        bash_command=(
-            "cd /opt/airflow/secur-sn && "
-            "test -s data/processed/alerts_fallback.jsonl && "
-            "test -s data/processed/hotspots_fallback.jsonl"
-        ),
+        python_callable=lambda: __import__("hive.airflow_client", fromlist=["analytics_risk_summary"]).analytics_risk_summary(),
     )
 
     verifier_privacy = BashOperator(
@@ -63,18 +45,14 @@ with DAG(
         ),
     )
 
-    consolider_hive = BashOperator(
+    consolider_hive = PythonOperator(
         task_id="consolider_hive",
-        bash_command=(
-            "cd /opt/airflow/secur-sn && "
-            "python -c \"from hive.catalog import catalog_statements, hive_settings; "
-            "assert 'hdfs://' in '\\n'.join(catalog_statements(hive_settings()))\""
-        ),
+        python_callable=lambda: __import__("hive.airflow_client", fromlist=["refresh_analytics_partitions"]).refresh_analytics_partitions(),
     )
 
-    detecter_zones_rouges = BashOperator(
+    detecter_zones_rouges = PythonOperator(
         task_id="detecter_zones_rouges",
-        bash_command="cd /opt/airflow/secur-sn && python spark/streaming_secur_sn.py --fallback --max-records 80",
+        python_callable=lambda: __import__("hive.airflow_client", fromlist=["analytics_risk_summary"]).analytics_risk_summary(),
     )
 
     branch_retrain_or_update = BranchPythonOperator(
@@ -91,7 +69,7 @@ with DAG(
         task_id="update_hotspots",
         bash_command=(
             "cd /opt/airflow/secur-sn && "
-            "python -c \"from hive.catalog import repair_statements; assert len(repair_statements()) == 3\""
+            "python -c \"from hive.airflow_client import analytics_risk_summary; print(analytics_risk_summary())\""
         ),
     )
 
@@ -101,7 +79,7 @@ with DAG(
             "cd /opt/airflow/secur-sn && "
             "mkdir -p reports/airflow_exports && "
             "python -c \"from hive.catalog import gold_location, hive_settings; "
-            "open('reports/airflow_exports/hdfs_gold_location.txt', 'w').write(gold_location(hive_settings(), 'hotspots') + '\\\\n')\""
+            "open('reports/airflow_exports/hdfs_gold_location.txt', 'w').write(gold_location(hive_settings(), 'hotspots_24h') + '\\\\n')\""
         ),
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
     )
@@ -124,7 +102,7 @@ with DAG(
 
     end = EmptyOperator(task_id="end", trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS)
 
-    start >> generate_history >> valider_fichiers_du_jour >> verifier_privacy
-    verifier_privacy >> consolider_hive >> detecter_zones_rouges >> branch_retrain_or_update
+    start >> generate_history >> verifier_privacy >> consolider_hive
+    consolider_hive >> valider_fichiers_du_jour >> detecter_zones_rouges >> branch_retrain_or_update
     branch_retrain_or_update >> [retrain_model, update_hotspots] >> exporter_aggregats_hdfs
     exporter_aggregats_hdfs >> generer_dashboard >> generer_rapport_crise >> nettoyer_quarantaine_30j >> end

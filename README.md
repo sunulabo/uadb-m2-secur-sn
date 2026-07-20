@@ -8,8 +8,8 @@ avec Conda pour les preuves locales et Docker Compose pour l'infrastructure.
 
 ```text
 field-simulator -> MinIO landing -> NiFi -> Kafka raw -> Spark Streaming
-Spark -> HBase (consultation temps reel)
-Spark -> HDFS Gold (Parquet + JSON snapshots) -> Hive Metastore PostgreSQL -> Hive views
+Spark -> HBase (alertes et consultation operationnelle courte)
+Spark -> HDFS Gold (agregat 24 h) -> Hive Metastore PostgreSQL -> Hive views -> Airflow / ML
 ```
 
 MinIO est uniquement la zone d'atterrissage. Kafka ne transporte que les flux
@@ -65,7 +65,7 @@ Hive. Il est aussi utilise lorsque l'on lance Airflow a la demande.
 Interfaces optionnelles, a lancer seulement pour l'observation :
 
 ```bash
-make ui          # Kafka UI (http://localhost:8088) + Airflow Webserver (http://localhost:8082)
+make ui          # Kafka UI (8088), Airflow Webserver (8082) + carte Secur-SN (8050)
 make airflow     # Scheduler Airflow et sa base, pour executer le DAG ML
 ```
 
@@ -83,15 +83,19 @@ make airflow     # Scheduler Airflow et sa base, pour executer le DAG ML
 Les sorties HDFS sont organisees ainsi :
 
 ```text
-/secur-sn/gold/alerts/batch_id=N/event_date=YYYY-MM-DD/*.parquet
-/secur-sn/gold/hotspots/batch_id=N/snapshot_date=YYYY-MM-DD/*.parquet
-/secur-sn/gold/hotspots_live/batch_id=N/*.json
+/secur-sn/gold/hotspots_24h/batch_id=N/snapshot_date=YYYY-MM-DD/*.parquet
 ```
 
 `hive-init` cree les tables externes et execute `MSCK REPAIR` toutes les
-minutes. Les vues attendues sont `secur_sn.vue_hotspots`,
-`secur_sn.vue_tendances_vehicule`, `secur_sn.vue_risque_meteo` et
+minutes. Les vues attendues sont `secur_sn.vue_hotspots_24h` et
 `secur_sn.vue_recommandations_patrouilles`.
+
+La table HBase `secur:hotspots` sert au suivi operationnel court (fenetre de
+5 minutes, pas de 1 minute) et les alertes correspondantes restent uniquement
+dans HBase. La vue `vue_hotspots_24h` contient la fenetre analytique de 24
+heures, glissant chaque heure, par cellule Web Mercator de 2 km. Airflow lit
+cette derniere vue toutes les deux heures pour choisir une mise a jour ou un
+reentrainement ML.
 
 ## Demarrage par brique
 

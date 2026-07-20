@@ -26,6 +26,7 @@ class HBaseSinkContractTest(unittest.TestCase):
             {
                 "incident_secure": "hashed",
                 "zone": "PIKINE",
+                "grid_2km_id": "wm2km_-968_837",
                 "type_incident": "ACCIDENT_GRAVE",
                 "type_vehicule": "BUS",
                 "nb_victimes": 2,
@@ -33,6 +34,7 @@ class HBaseSinkContractTest(unittest.TestCase):
             }
         )
         self.assertIn(b"meta:type_vehicule", cells)
+        self.assertIn(b"meta:grid_2km_id", cells)
         self.assertNotIn(b"meta:nom_victime", cells)
 
     def test_hotspot_cells_keep_the_batch_identity(self):
@@ -40,6 +42,7 @@ class HBaseSinkContractTest(unittest.TestCase):
             {
                 "hotspot_id": "PIKINE#202607150600",
                 "zone": "PIKINE",
+                "grid_2km_id": "wm2km_-968_837",
                 "nb_incidents": 4,
                 "nb_victimes": 3,
                 "batch_id": 12,
@@ -48,6 +51,7 @@ class HBaseSinkContractTest(unittest.TestCase):
             }
         )
         self.assertEqual(cells[b"stats:batch_id"], b"12")
+        self.assertEqual(cells[b"meta:grid_2km_id"], b"wm2km_-968_837")
 
     def test_pii_alias_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "telephone_temoin"):

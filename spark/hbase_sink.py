@@ -96,6 +96,7 @@ def incident_cells(payload: Mapping[str, Any]) -> dict[bytes, bytes]:
     return non_null_cells(
         {
             b"meta:zone": payload.get("zone"),
+            b"meta:grid_2km_id": payload.get("grid_2km_id"),
             b"meta:event_ts": payload.get("event_ts"),
             b"meta:processed_at": payload.get("processed_at"),
             b"meta:type_incident": payload.get("type_incident"),
@@ -117,6 +118,7 @@ def hotspot_cells(payload: Mapping[str, Any]) -> dict[bytes, bytes]:
     return non_null_cells(
         {
             b"meta:zone": payload.get("zone"),
+            b"meta:grid_2km_id": payload.get("grid_2km_id"),
             b"meta:window_start": payload.get("window_start"),
             b"meta:timestamp": payload.get("timestamp"),
             b"meta:processed_at": payload.get("processed_at"),
@@ -128,6 +130,7 @@ def hotspot_cells(payload: Mapping[str, Any]) -> dict[bytes, bytes]:
             b"stats:batch_id": payload.get("batch_id"),
             b"risk:score_risque": payload.get("score_risque"),
             b"risk:niveau_risque": payload.get("niveau_risque"),
+            b"risk:recommandation": payload.get("recommandation"),
         }
     )
 

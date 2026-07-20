@@ -41,33 +41,14 @@ def gold_location(settings: Mapping[str, str], prefix: str) -> str:
 
 def catalog_statements(settings: Mapping[str, str]) -> list[str]:
     """Construit le DDL des tables Parquet externes et des vues de l'examen."""
-    alerts = gold_location(settings, "alerts")
-    hotspots = gold_location(settings, "hotspots")
+    hotspots_24h = gold_location(settings, "hotspots_24h")
     return [
         "CREATE DATABASE IF NOT EXISTS secur_sn",
         "USE secur_sn",
-        f"""CREATE EXTERNAL TABLE IF NOT EXISTS incidents_historique (
-          incident_secure STRING,
+        f"""CREATE EXTERNAL TABLE IF NOT EXISTS hotspots_24h_historique (
+          hotspot_24h_id STRING,
           zone STRING,
-          type_incident STRING,
-          type_vehicule STRING,
-          latitude DOUBLE,
-          longitude DOUBLE,
-          nb_victimes INT,
-          heure INT,
-          event_ts TIMESTAMP,
-          score_gravite DOUBLE,
-          score_vehicule DOUBLE,
-          score_meteo DOUBLE,
-          score_risque DOUBLE,
-          processed_at TIMESTAMP
-        )
-        PARTITIONED BY (batch_id INT, event_date STRING)
-        STORED AS PARQUET
-        LOCATION '{alerts}'""",
-        f"""CREATE EXTERNAL TABLE IF NOT EXISTS hotspots_historique (
-          hotspot_id STRING,
-          zone STRING,
+          grid_2km_id STRING,
           latitude DOUBLE,
           longitude DOUBLE,
           nb_incidents BIGINT,
@@ -76,40 +57,31 @@ def catalog_statements(settings: Mapping[str, str]) -> list[str]:
           score_risque DOUBLE,
           niveau_risque STRING,
           window_start TIMESTAMP,
-          `timestamp` TIMESTAMP,
+          window_end TIMESTAMP,
           processed_at TIMESTAMP
         )
         PARTITIONED BY (batch_id INT, snapshot_date STRING)
         STORED AS PARQUET
-        LOCATION '{hotspots}'""",
-        """CREATE OR REPLACE VIEW vue_hotspots AS
+        LOCATION '{hotspots_24h}'""",
+        """CREATE OR REPLACE VIEW vue_hotspots_24h AS
         WITH derniers_hotspots AS (
           SELECT *, ROW_NUMBER() OVER (
-            PARTITION BY hotspot_id ORDER BY batch_id DESC, processed_at DESC
+            PARTITION BY hotspot_24h_id ORDER BY batch_id DESC, processed_at DESC
           ) AS rang
-          FROM hotspots_historique
+          FROM hotspots_24h_historique
         )
-        SELECT zone, nb_incidents, nb_victimes, heure_critique, score_risque, niveau_risque, `timestamp`
+        SELECT hotspot_24h_id, zone, grid_2km_id, latitude, longitude,
+               nb_incidents, nb_victimes, heure_critique, score_risque,
+               niveau_risque, window_start, window_end
         FROM derniers_hotspots
         WHERE rang = 1
         ORDER BY score_risque DESC""",
-        """CREATE OR REPLACE VIEW vue_tendances_vehicule AS
-        SELECT type_vehicule, COUNT(*) AS nb_incidents, AVG(score_risque) AS score_moyen,
-               AVG(nb_victimes) AS victimes_moyennes
-        FROM incidents_historique
-        GROUP BY type_vehicule
-        ORDER BY nb_incidents DESC""",
-        """CREATE OR REPLACE VIEW vue_risque_meteo AS
-        SELECT zone, AVG(score_meteo) AS score_meteo_moyen, AVG(score_risque) AS score_risque_moyen
-        FROM incidents_historique
-        GROUP BY zone
-        ORDER BY score_risque_moyen DESC""",
         """CREATE OR REPLACE VIEW vue_recommandations_patrouilles AS
         SELECT zone, niveau_risque, score_risque, heure_critique,
                CASE WHEN niveau_risque = 'ROUGE' THEN 'Patrouille immediate et renfort CETUD'
                     WHEN niveau_risque = 'ORANGE' THEN 'Patrouille preventive ciblee'
                     ELSE 'Surveillance reguliere' END AS recommandation
-        FROM hotspots_historique
+        FROM vue_hotspots_24h
         WHERE niveau_risque IN ('ORANGE', 'ROUGE')
         ORDER BY score_risque DESC""",
     ]
@@ -118,6 +90,5 @@ def catalog_statements(settings: Mapping[str, str]) -> list[str]:
 def repair_statements() -> list[str]:
     return [
         "USE secur_sn",
-        "MSCK REPAIR TABLE incidents_historique",
-        "MSCK REPAIR TABLE hotspots_historique",
+        "MSCK REPAIR TABLE hotspots_24h_historique",
     ]

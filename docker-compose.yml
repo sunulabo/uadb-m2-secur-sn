@@ -54,6 +54,28 @@ services:
       - "8088:8080"
     profiles: ["ui"]
 
+  dashboard:
+    build:
+      context: .
+      dockerfile: services/dashboard/Dockerfile
+    image: secur-sn/dashboard:local
+    container_name: secur_dashboard
+    depends_on:
+      hbase:
+        condition: service_healthy
+      hive-server:
+        condition: service_started
+    environment:
+      HBASE_DOCKER_HOST: hbase
+      HBASE_THRIFT_PORT: 9090
+      HIVE_DOCKER_HOST: hive-server
+      HIVE_PORT: 10000
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./data/processed:/opt/secur-sn/data/processed:ro
+    profiles: ["ui"]
+
   kafka-init:
     build:
       context: .
@@ -444,7 +466,10 @@ services:
     profiles: ["airflow", "ui"]
 
   airflow-db-init:
-    image: apache/airflow:2.9.3
+    image: secur-sn-airflow:local
+    build:
+      context: .
+      dockerfile: services/airflow_runtime/Dockerfile
     container_name: secur_airflow_db_init
     user: "${AIRFLOW_UID:-50000}:0"
     depends_on:
@@ -465,7 +490,10 @@ services:
     profiles: ["airflow", "ui"]
 
   airflow-webserver:
-    image: apache/airflow:2.9.3
+    image: secur-sn-airflow:local
+    build:
+      context: .
+      dockerfile: services/airflow_runtime/Dockerfile
     container_name: secur_airflow_webserver
     user: "${AIRFLOW_UID:-50000}:0"
     depends_on:
@@ -489,7 +517,10 @@ services:
     profiles: ["ui"]
 
   airflow-scheduler:
-    image: apache/airflow:2.9.3
+    image: secur-sn-airflow:local
+    build:
+      context: .
+      dockerfile: services/airflow_runtime/Dockerfile
     container_name: secur_airflow_scheduler
     user: "${AIRFLOW_UID:-50000}:0"
     depends_on:

@@ -1,0 +1,8 @@
+{
+  "name": "secur-sn-dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "vite build" },
+  "dependencies": { "@inertiajs/vue3": "^2.0.0", "leaflet": "^1.9.4", "vue": "^3.5.13" },
+  "devDependencies": { "@tailwindcss/vite": "^4.1.7", "@vitejs/plugin-vue": "^5.2.1", "vite": "^6.0.7", "tailwindcss": "^4.1.7" }
+}

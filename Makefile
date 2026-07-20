@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-.PHONY: ui airflow-ui
+.PHONY: ui airflow-ui dashboard-ui
 
 PYTHON ?= python3
 SERVICE ?=
@@ -12,7 +12,7 @@ PRODUCER_MAX_MESSAGES ?= 30
 	kafka minio ingestion spark hdfs storage airflow \
 	history producers streaming streaming-live hbase hive hive-query hdfs-ls ml dashboard privacy \
 	trace demo collect validate test test-local clean-reports \
-	consume-incidents scan-hbase
+	consume-incidents scan-hbase dashboard-ui
 
 help:
 	@printf '\nSecur-SN - commandes simples\n'
@@ -32,8 +32,9 @@ help:
 	@printf '  make hdfs                  Cluster HDFS : NameNode + 2 DataNodes\n'
 	@printf '  make storage               HDFS Gold + HBase + Hive Metastore PostgreSQL\n'
 	@printf '  make airflow               Airflow scheduler et base, a la demande\n'
-	@printf '  make ui                    Kafka UI + Airflow Webserver\n'
+	@printf '  make ui                    Kafka UI + Airflow Webserver + carte FastAPI\n'
 	@printf '  make airflow-ui            Airflow Webserver seulement\n\n'
+	@printf '  make dashboard-ui          Carte FastAPI seulement (http://localhost:8050)\n\n'
 	@printf 'Pipeline local / preuves:\n'
 	@printf '  make streaming             Streaming fallback local borne\n'
 	@printf '  make streaming-live        Demarre le driver Spark/Kafka Docker\n'
@@ -102,10 +103,13 @@ airflow:
 	docker compose --profile airflow up -d --build airflow-scheduler
 
 ui:
-	docker compose --profile ui up -d kafka-ui airflow-webserver
+	docker compose --profile ui up -d --build kafka-ui airflow-webserver dashboard
 
 airflow-ui:
-	docker compose --profile ui up -d airflow-webserver
+	docker compose --profile ui up -d --build airflow-webserver
+
+dashboard-ui:
+	docker compose --profile ui up -d --build --no-deps dashboard
 
 history:
 	$(PYTHON) producers/generate_batch_history.py --count $(HISTORY_COUNT)
@@ -131,7 +135,7 @@ hive:
 	docker compose up -d --build namenode datanode-1 datanode-2 hdfs-init hive-postgres hive-metastore hive-server hive-init
 
 hive-query:
-	docker compose exec -T hive-server /opt/hive/bin/beeline -u jdbc:hive2://localhost:10000/secur_sn -n hive -e "SHOW TABLES; DESCRIBE vue_hotspots"
+	docker compose exec -T hive-server /opt/hive/bin/beeline -u jdbc:hive2://localhost:10000/secur_sn -n hive -e "SHOW TABLES; DESCRIBE vue_hotspots_24h"
 
 hdfs-ls:
 	docker compose exec -T namenode hdfs dfs -ls -R /secur-sn/gold

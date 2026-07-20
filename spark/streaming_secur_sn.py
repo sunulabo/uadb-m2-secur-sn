@@ -17,6 +17,7 @@ from spark.spark_utils import (
     FORBIDDEN_PII_FIELDS,
     aggregate_alerts,
     build_alert,
+    grid_2km_id,
     load_env_file,
     project_path,
     read_jsonl,
@@ -33,6 +34,9 @@ DEFAULT_STREAMING_SETTINGS = {
     "hdfs_gold_root": "/secur-sn/gold",
     "hdfs_namenode_uri": "hdfs://namenode:8020",
     "hotspot_window": "5 minutes",
+    "hotspot_slide": "1 minute",
+    "analytics_window": "24 hours",
+    "analytics_slide": "1 hour",
     "max_offsets_per_trigger": "120",
     "starting_offsets": "earliest",
     "trigger_interval": "60 seconds",
@@ -57,7 +61,11 @@ def write_streaming_ready_marker() -> None:
         json.dumps(
             {
                 "status": "ready",
-                "queries": ["secur_sn_alerts_to_hbase_hdfs", "secur_sn_hotspots_to_hbase_hdfs"],
+                "queries": [
+                    "secur_sn_alerts_to_hbase",
+                    "secur_sn_hotspots_to_hbase",
+                    "secur_sn_hotspots_24h_to_hdfs",
+                ],
                 "started_at": datetime.now(timezone.utc).isoformat(),
             },
             sort_keys=True,
@@ -78,6 +86,9 @@ def streaming_settings(environment: Mapping[str, str] | None = None) -> Dict[str
         "hdfs_gold_root": env.get("HDFS_GOLD_ROOT", DEFAULT_STREAMING_SETTINGS["hdfs_gold_root"]),
         "hdfs_namenode_uri": env.get("HDFS_NAMENODE_URI", DEFAULT_STREAMING_SETTINGS["hdfs_namenode_uri"]),
         "hotspot_window": env.get("SPARK_HOTSPOT_WINDOW", DEFAULT_STREAMING_SETTINGS["hotspot_window"]),
+        "hotspot_slide": env.get("SPARK_HOTSPOT_SLIDE", DEFAULT_STREAMING_SETTINGS["hotspot_slide"]),
+        "analytics_window": env.get("SPARK_ANALYTICS_WINDOW", DEFAULT_STREAMING_SETTINGS["analytics_window"]),
+        "analytics_slide": env.get("SPARK_ANALYTICS_SLIDE", DEFAULT_STREAMING_SETTINGS["analytics_slide"]),
         "max_offsets_per_trigger": env.get(
             "SPARK_MAX_OFFSETS_PER_TRIGGER", DEFAULT_STREAMING_SETTINGS["max_offsets_per_trigger"]
         ),
@@ -149,7 +160,7 @@ def run_fallback(max_records: int) -> int:
 
 
 def run_spark_streaming() -> int:
-    """Lance Kafka -> Spark -> HBase temps reel et HDFS Gold."""
+    """Lance Kafka -> Spark -> HBase temps reel et HDFS Gold analytique."""
     clear_streaming_ready_marker()
     try:
         from pyspark.sql import SparkSession
@@ -163,6 +174,7 @@ def run_spark_streaming() -> int:
             from_json,
             lit,
             max as spark_max,
+            avg as spark_avg,
             round as spark_round,
             sha2,
             sum as spark_sum,
@@ -254,6 +266,7 @@ def run_spark_streaming() -> int:
     gravite_udf = udf(score_gravite_udf_value, DoubleType())
     vehicule_udf = udf(score_vehicule_udf_value, DoubleType())
     meteo_udf = udf(score_meteo_udf_value, DoubleType())
+    grid_udf = udf(grid_2km_id, StringType())
 
     def scored_alerts_stream():
         """Construit un flux independant, sans topic Kafka intermediaire apres Spark."""
@@ -312,6 +325,7 @@ def run_spark_streaming() -> int:
                 "score_risque",
                 spark_round(col("score_gravite") * col("score_vehicule") * col("score_meteo") * col("facteur_heure"), 3),
             )
+            .withColumn("grid_2km_id", grid_udf(col("latitude"), col("longitude")))
             .drop("incident_id", "nom_victime", "tel_temoin")
             .select(
                 "incident_secure",
@@ -320,6 +334,7 @@ def run_spark_streaming() -> int:
                 "type_vehicule",
                 "latitude",
                 "longitude",
+                "grid_2km_id",
                 "nb_victimes",
                 "heure",
                 "event_ts",
@@ -333,24 +348,25 @@ def run_spark_streaming() -> int:
     safe_alerts = scored_alerts_stream()
     hotspots = (
         scored_alerts_stream()
-        .groupBy(window(col("event_ts"), settings["hotspot_window"], "1 minute"), col("zone"))
+        .groupBy(window(col("event_ts"), settings["hotspot_window"], settings["hotspot_slide"]), col("zone"), col("grid_2km_id"))
         .agg(
             count("*").alias("nb_incidents"),
             spark_sum("nb_victimes").alias("nb_victimes"),
             spark_sum("score_risque").alias("score_risque_sum"),
             spark_max("heure").alias("heure_critique"),
-            spark_max("latitude").alias("latitude"),
-            spark_max("longitude").alias("longitude"),
+            spark_avg("latitude").alias("latitude"),
+            spark_avg("longitude").alias("longitude"),
         )
         .withColumn("score_risque", spark_round(col("score_risque_sum") * col("nb_incidents") / lit(3.0), 3))
         .withColumn(
             "niveau_risque",
             when(col("score_risque") > 20, lit("ROUGE")).when(col("score_risque") > 10, lit("ORANGE")).otherwise(lit("VERT")),
         )
-        .withColumn("hotspot_id", concat_ws("#", col("zone"), expr("date_format(window.end, 'yyyyMMddHHmm')")))
+        .withColumn("hotspot_id", concat_ws("#", lit("ops"), col("grid_2km_id"), expr("date_format(window.end, 'yyyyMMddHHmm')")))
         .select(
             "hotspot_id",
             "zone",
+            "grid_2km_id",
             "latitude",
             "longitude",
             "nb_incidents",
@@ -362,6 +378,33 @@ def run_spark_streaming() -> int:
             expr("window.end as timestamp"),
         )
     )
+    hotspots_24h = (
+        scored_alerts_stream()
+        .groupBy(
+            window(col("event_ts"), settings["analytics_window"], settings["analytics_slide"]),
+            col("zone"),
+            col("grid_2km_id"),
+        )
+        .agg(
+            count("*").alias("nb_incidents"),
+            spark_sum("nb_victimes").alias("nb_victimes"),
+            spark_sum("score_risque").alias("score_risque_sum"),
+            spark_max("heure").alias("heure_critique"),
+            spark_avg("latitude").alias("latitude"),
+            spark_avg("longitude").alias("longitude"),
+        )
+        .withColumn("score_risque", spark_round(col("score_risque_sum") * col("nb_incidents") / lit(3.0), 3))
+        .withColumn(
+            "niveau_risque",
+            when(col("score_risque") > 20, lit("ROUGE")).when(col("score_risque") > 10, lit("ORANGE")).otherwise(lit("VERT")),
+        )
+        .withColumn("hotspot_24h_id", concat_ws("#", lit("24h"), col("grid_2km_id"), expr("date_format(window.end, 'yyyyMMddHHmm')")))
+        .select(
+            "hotspot_24h_id", "zone", "grid_2km_id", "latitude", "longitude", "nb_incidents", "nb_victimes",
+            "heure_critique", "score_risque", "niveau_risque", expr("window.start as window_start"),
+            expr("window.end as window_end"),
+        )
+    )
 
     def write_alerts_batch(batch_df, batch_id: int) -> None:
         if batch_df.rdd.isEmpty():
@@ -370,18 +413,11 @@ def run_spark_streaming() -> int:
         alerts = (
             batch_df.withColumn("batch_id", lit(batch_id))
             .withColumn("processed_at", current_timestamp())
-            .withColumn("event_date", date_format(col("event_ts"), "yyyy-MM-dd"))
             .persist()
         )
         try:
-            assert_pii_free_columns(alerts.columns, "HBase et HDFS alertes")
+            assert_pii_free_columns(alerts.columns, "HBase alertes")
             alerts.rdd.foreachPartition(lambda rows: write_incident_partition(rows, hbase_config))
-            (
-                alerts.drop("batch_id")
-                .write.mode("overwrite")
-                .partitionBy("event_date")
-                .parquet(hdfs_gold_path(settings, f"alerts/batch_id={batch_id}"))
-            )
         finally:
             alerts.unpersist()
 
@@ -392,51 +428,66 @@ def run_spark_streaming() -> int:
         snapshots = (
             batch_df.withColumn("batch_id", lit(batch_id))
             .withColumn("processed_at", current_timestamp())
-            .withColumn("snapshot_date", date_format(col("timestamp"), "yyyy-MM-dd"))
             .persist()
         )
         try:
-            assert_pii_free_columns(snapshots.columns, "HBase et HDFS hotspots")
-            # Les agregats sont petits; une partition protege le cumul idempotent par zone.
+            assert_pii_free_columns(snapshots.columns, "HBase hotspots")
+            # Les agregats sont petits; une partition protege le cumul idempotent par cellule.
             snapshots.repartition(1).rdd.foreachPartition(lambda rows: write_hotspot_partition(rows, hbase_config))
-            (
-                snapshots.drop("batch_id")
-                .write.mode("overwrite")
-                .partitionBy("snapshot_date")
-                .parquet(hdfs_gold_path(settings, f"hotspots/batch_id={batch_id}"))
-            )
-            (
-                snapshots.drop("snapshot_date")
-                .write.mode("overwrite")
-                .json(hdfs_gold_path(settings, f"hotspots_live/batch_id={batch_id}"))
-            )
         finally:
             snapshots.unpersist()
 
+    def write_hotspots_24h_batch(batch_df, batch_id: int) -> None:
+        """Archive l'agregat analytique 24 h dans HDFS pour Hive uniquement."""
+        if batch_df.rdd.isEmpty():
+            return
+        assert_pii_free_columns(batch_df.columns, "hotspots analytiques 24h Spark")
+        aggregates = (
+            batch_df.withColumn("batch_id", lit(batch_id))
+            .withColumn("processed_at", current_timestamp())
+            .withColumn("snapshot_date", date_format(col("window_end"), "yyyy-MM-dd"))
+        )
+        assert_pii_free_columns(aggregates.columns, "HDFS hotspots analytiques 24h")
+        (
+            aggregates.drop("batch_id")
+            .write.mode("overwrite")
+            .partitionBy("snapshot_date")
+            .parquet(hdfs_gold_path(settings, f"hotspots_24h/batch_id={batch_id}"))
+        )
+
     alerts_query = (
         safe_alerts.writeStream.foreachBatch(write_alerts_batch)
-        .queryName("secur_sn_alerts_to_hbase_hdfs")
-        .option("checkpointLocation", str(checkpoint_root / "alerts_to_hbase_hdfs_v3"))
+        .queryName("secur_sn_alerts_to_hbase")
+        .option("checkpointLocation", str(checkpoint_root / "alerts_to_hbase_v4"))
         .outputMode("append")
         .trigger(processingTime=settings["trigger_interval"])
         .start()
     )
     hotspots_query = (
         hotspots.writeStream.foreachBatch(write_hotspots_batch)
-        .queryName("secur_sn_hotspots_to_hbase_hdfs")
-        .option("checkpointLocation", str(checkpoint_root / "hotspots_to_hbase_hdfs_v3"))
+        .queryName("secur_sn_hotspots_to_hbase")
+        .option("checkpointLocation", str(checkpoint_root / "hotspots_to_hbase_v4"))
+        .outputMode("append")
+        .trigger(processingTime=settings["trigger_interval"])
+        .start()
+    )
+    hotspots_24h_query = (
+        hotspots_24h.writeStream.foreachBatch(write_hotspots_24h_batch)
+        .queryName("secur_sn_hotspots_24h_to_hdfs")
+        .option("checkpointLocation", str(checkpoint_root / "hotspots_24h_to_hdfs_v1"))
         .outputMode("append")
         .trigger(processingTime=settings["trigger_interval"])
         .start()
     )
 
     write_streaming_ready_marker()
-    print("Streaming Secur-SN actif: Kafka -> Spark -> HBase + HDFS Gold.", flush=True)
+    print("Streaming Secur-SN actif: Kafka -> Spark -> HBase, agregat 24h -> HDFS Gold.", flush=True)
     print(f"Checkpoints: {checkpoint_root}", flush=True)
     print(f"Sorties Gold: {hdfs_gold_path(settings, '')}", flush=True)
     spark.streams.awaitAnyTermination()
     alerts_query.stop()
     hotspots_query.stop()
+    hotspots_24h_query.stop()
     return 0
 
 

@@ -1,13 +1,12 @@
 # Hive Secur-SN
 
-Spark ecrit les Parquet dans HDFS Gold. Hive ne copie pas les donnees :
+Spark ecrit l'agregat analytique 24 h dans HDFS Gold. Hive ne copie pas les donnees :
 `hive-init` maintient des tables externes et les vues analytiques a partir du
 metastore PostgreSQL distant.
 
 - `secur_sn.incidents_historique` : `hdfs://namenode:8020/secur-sn/gold/alerts` ;
-- `secur_sn.hotspots_historique` : `hdfs://namenode:8020/secur-sn/gold/hotspots` ;
-- `vue_hotspots`, `vue_tendances_vehicule`, `vue_risque_meteo` et
-  `vue_recommandations_patrouilles`.
+- `secur_sn.hotspots_24h_historique` : `hdfs://namenode:8020/secur-sn/gold/hotspots_24h` ;
+- `vue_hotspots_24h` et `vue_recommandations_patrouilles`.
 
 ```bash
 make hive
