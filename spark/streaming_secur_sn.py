@@ -276,6 +276,7 @@ def run_spark_streaming() -> int:
             .option("subscribe", "secur_incidents_raw")
             .option("startingOffsets", settings["starting_offsets"])
             .option("maxOffsetsPerTrigger", settings["max_offsets_per_trigger"])
+            .option("failOnDataLoss", "false")
             .load()
         )
         incidents = (
@@ -291,6 +292,7 @@ def run_spark_streaming() -> int:
             .option("subscribe", "secur_meteo")
             .option("startingOffsets", settings["starting_offsets"])
             .option("maxOffsetsPerTrigger", settings["max_offsets_per_trigger"])
+            .option("failOnDataLoss", "false")
             .load()
         )
         meteo = (

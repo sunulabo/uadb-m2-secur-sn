@@ -9,6 +9,7 @@
   --color-signal-green: #2f8f62;
   --color-signal-orange: #c98322;
   --color-signal-red: #c54b47;
+  --color-signal-yellow: #e4b44b;
 }
 
 @layer base {
@@ -16,3 +17,7 @@
 }
 
 .leaflet-container { font: 12px Inter, ui-sans-serif, system-ui, sans-serif; }
+.leaflet-container { background: #dce9e5; }
+.eyebrow { @apply text-[10px] font-bold uppercase tracking-[.18em] text-muted; }
+.panel { @apply border border-line bg-white p-5; }
+.panel-title { @apply mt-1 text-xl font-semibold; }

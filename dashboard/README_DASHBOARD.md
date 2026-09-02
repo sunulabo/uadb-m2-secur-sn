@@ -32,3 +32,19 @@ l'interface, utilisez `make ui`.
 
 L'interface utilise Inertia avec Vue 3, Vite et Leaflet. FastAPI reste
 responsable des lectures HBase/Hive et transmet les props à la page Vue.
+
+## Vues de supervision
+
+Le centre de situation propose six vues :
+
+- **Vue générale** : KPI, priorités et chaîne MinIO/NiFi/Kafka/Spark ;
+- **Carte opérationnelle** : cellules 2 km x 2 km et sélection d'un hotspot ;
+- **Analytique 24 h** : agrégats issus de Hive/HDFS Gold ;
+- **Alertes HBase** : alertes opérationnelles uniquement ;
+- **ML et recommandations** : artefacts ML, statut Airflow et actions terrain ;
+- **Qualité des données** : sources, sorties, batches et confidentialité.
+
+Les endpoints JSON correspondants sont `/api/dashboard/overview`,
+`/api/dashboard/map`, `/api/dashboard/analytics`, `/api/dashboard/alerts`,
+`/api/dashboard/ml` et `/api/dashboard/quality`. Ils conservent un fallback
+local si HBase, Hive ou les artefacts ML sont indisponibles.

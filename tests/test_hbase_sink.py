@@ -5,10 +5,12 @@ from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import spark.hbase_sink as hbase_sink
 from spark.hbase_sink import (
     TABLES,
     assert_safe_payload,
     ensure_namespace,
+    ensure_tables,
     hbase_namespace_url,
     hbase_settings,
     hotspot_cells,
@@ -85,6 +87,27 @@ class HBaseSinkContractTest(unittest.TestCase):
         self.assertEqual(calls[0][0], "GET")
         self.assertEqual(calls[1][0], "POST")
         self.assertEqual(calls[1][1], hbase_namespace_url(settings))
+
+    def test_ensure_tables_skips_the_flaky_rest_namespace_check_when_nothing_is_missing(self):
+        class FakeConnection:
+            def tables(self):
+                return [name.encode() for name in TABLES]
+
+            def close(self):
+                pass
+
+        def failing_ensure_namespace(*_args, **_kwargs):
+            raise AssertionError("ensure_namespace ne doit pas etre appele si les tables existent deja")
+
+        original_connect = hbase_sink._connect
+        original_ensure_namespace = hbase_sink.ensure_namespace
+        hbase_sink._connect = lambda settings: FakeConnection()
+        hbase_sink.ensure_namespace = failing_ensure_namespace
+        try:
+            ensure_tables(hbase_settings({}))
+        finally:
+            hbase_sink._connect = original_connect
+            hbase_sink.ensure_namespace = original_ensure_namespace
 
 
 if __name__ == "__main__":

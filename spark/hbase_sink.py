@@ -48,6 +48,7 @@ DEFAULT_HBASE_SETTINGS = {
     "hbase_port": "9090",
     "hbase_rest_url": "http://hbase:8080",
     "hbase_rest_timeout_seconds": "30",
+    "hbase_thrift_timeout_seconds": "10",
     "ready_timeout_seconds": "600",
     "retry_seconds": "5",
 }
@@ -64,6 +65,9 @@ def hbase_settings(environment: Mapping[str, str] | None = None) -> dict[str, st
         "hbase_rest_url": env.get("HBASE_REST_URL", DEFAULT_HBASE_SETTINGS["hbase_rest_url"]),
         "hbase_rest_timeout_seconds": env.get(
             "HBASE_REST_TIMEOUT_SECONDS", DEFAULT_HBASE_SETTINGS["hbase_rest_timeout_seconds"]
+        ),
+        "hbase_thrift_timeout_seconds": env.get(
+            "HBASE_THRIFT_TIMEOUT_SECONDS", DEFAULT_HBASE_SETTINGS["hbase_thrift_timeout_seconds"]
         ),
         "ready_timeout_seconds": env.get(
             "HBASE_READY_TIMEOUT_SECONDS", DEFAULT_HBASE_SETTINGS["ready_timeout_seconds"]
@@ -145,7 +149,7 @@ def _connect(settings: Mapping[str, str]):
     connection = happybase.Connection(
         host=settings["hbase_host"],
         port=int(settings["hbase_port"]),
-        timeout=10000,
+        timeout=int(float(settings["hbase_thrift_timeout_seconds"]) * 1000),
         autoconnect=False,
     )
     connection.open()
@@ -180,13 +184,18 @@ def ensure_namespace(settings: Mapping[str, str], opener=None) -> None:
 
 def ensure_tables(settings: Mapping[str, str]) -> None:
     """Cree les tables une fois depuis le driver avant de lancer les requetes."""
-    ensure_namespace(settings)
     connection = _connect(settings)
     try:
         existing = {
             name.decode("utf-8") if isinstance(name, bytes) else str(name)
             for name in connection.tables()
         }
+        # Le endpoint REST /namespaces/<ns> de harisekhon/hbase:2.1 peut rester bloque
+        # sans jamais repondre lorsque le namespace existe deja; on ne l'appelle donc
+        # que si une table manque reellement (Thrift v1 ne cree pas les namespaces).
+        if not TABLES.keys() - existing:
+            return
+        ensure_namespace(settings)
         for name, families in TABLES.items():
             if name not in existing:
                 connection.create_table(name, families)

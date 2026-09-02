@@ -30,11 +30,13 @@ services:
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_NUM_PARTITIONS: ${KAFKA_INTERNAL_TOPIC_PARTITIONS:-1}
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:--Xmx256m -Xms256m}
     ports:
       - "9092:9092"
     volumes:
       - kafka_single_data:/tmp/kraft-combined-logs
     cpus: ${KAFKA_CPU_LIMIT:-0.75}
+    mem_limit: ${KAFKA_MEM_LIMIT:-640m}
     healthcheck:
       test: ["CMD-SHELL", "bash -c '>/dev/tcp/localhost/19092'"]
       interval: 5s
@@ -74,6 +76,7 @@ services:
       - "8050:8050"
     volumes:
       - ./data/processed:/opt/secur-sn/data/processed:ro
+    mem_limit: ${DASHBOARD_MEM_LIMIT:-256m}
     profiles: ["ui"]
 
   kafka-init:
@@ -93,6 +96,7 @@ services:
       KAFKA_TOPIC_MIN_ISR: "1"
       KAFKA_TOPIC_RETENTION_MS: ${KAFKA_TOPIC_RETENTION_MS:-604800000}
       KAFKA_TOPICS: secur_incidents_raw,secur_meteo,secur_incidents_dlq,secur_meteo_dlq
+    mem_limit: ${INIT_MEM_LIMIT:-96m}
     restart: "no"
 
   minio:
@@ -107,6 +111,7 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+    mem_limit: ${MINIO_MEM_LIMIT:-256m}
 
   minio-init:
     build:
@@ -122,6 +127,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-securadmin123}
       MINIO_LANDING_BUCKET: ${MINIO_LANDING_BUCKET:-secur-sn-landing}
       MINIO_QUARANTINE_BUCKET: ${MINIO_QUARANTINE_BUCKET:-secur-sn-quarantine}
+    mem_limit: ${INIT_MEM_LIMIT:-96m}
     restart: "no"
 
   nifi-work-init:
@@ -133,6 +139,7 @@ services:
     user: "0:0"
     volumes:
       - nifi_work_cache:/work
+    mem_limit: ${INIT_MEM_LIMIT:-96m}
     restart: "no"
 
   nifi:
@@ -155,6 +162,8 @@ services:
       NIFI_WEB_HTTP_PORT: 8081
       SINGLE_USER_CREDENTIALS_USERNAME: admin
       SINGLE_USER_CREDENTIALS_PASSWORD: securSnDemo12345
+      NIFI_JVM_HEAP_INIT: ${NIFI_JVM_HEAP_INIT:-640m}
+      NIFI_JVM_HEAP_MAX: ${NIFI_JVM_HEAP_MAX:-640m}
     ports:
       - "8081:8081"
     volumes:
@@ -163,6 +172,7 @@ services:
       - ./data/nifi:/opt/nifi/nifi-current/data/secur-sn
       - nifi_work_cache:/opt/nifi/nifi-current/work
     cpus: ${NIFI_CPU_LIMIT:-1.0}
+    mem_limit: ${NIFI_MEM_LIMIT:-1024m}
 
   nifi-init:
     build:
@@ -188,6 +198,7 @@ services:
       NIFI_FLOW_RETRY_SECONDS: ${NIFI_FLOW_RETRY_SECONDS:-10}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-securadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-securadmin123}
+    mem_limit: ${INIT_MEM_LIMIT:-96m}
     restart: on-failure
 
   field-simulator:
@@ -208,6 +219,7 @@ services:
       MINIO_LANDING_BUCKET: ${MINIO_LANDING_BUCKET:-secur-sn-landing}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-securadmin123}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-securadmin}
+    mem_limit: ${INIT_MEM_LIMIT:-96m}
     restart: unless-stopped
 
   spark-streaming:
@@ -245,10 +257,11 @@ services:
     environment:
       HADOOP_CONF_DIR: /opt/bitnami/spark/conf/hadoop
       HBASE_DOCKER_HOST: hbase
-      HBASE_READY_TIMEOUT_SECONDS: ${HBASE_READY_TIMEOUT_SECONDS:-600}
+      HBASE_READY_TIMEOUT_SECONDS: ${HBASE_READY_TIMEOUT_SECONDS:-1200}
       HBASE_REST_URL: ${HBASE_REST_URL:-http://hbase:8080}
-      HBASE_REST_TIMEOUT_SECONDS: ${HBASE_REST_TIMEOUT_SECONDS:-30}
-      HBASE_RETRY_SECONDS: ${HBASE_RETRY_SECONDS:-5}
+      HBASE_REST_TIMEOUT_SECONDS: ${HBASE_REST_TIMEOUT_SECONDS:-90}
+      HBASE_THRIFT_TIMEOUT_SECONDS: ${HBASE_THRIFT_TIMEOUT_SECONDS:-30}
+      HBASE_RETRY_SECONDS: ${HBASE_RETRY_SECONDS:-10}
       HBASE_THRIFT_PORT: ${HBASE_THRIFT_PORT:-9090}
       HDFS_GOLD_ROOT: ${HDFS_GOLD_ROOT:-/secur-sn/gold}
       HDFS_NAMENODE_URI: ${HDFS_NAMENODE_URI:-hdfs://namenode:8020}
@@ -270,6 +283,7 @@ services:
       - ./hadoop/conf:/opt/bitnami/spark/conf/hadoop:ro
       - spark_single_checkpoints:/opt/secur-sn/data/checkpoints
     cpus: ${SPARK_CPU_LIMIT:-1.0}
+    mem_limit: ${SPARK_MEM_LIMIT:-1280m}
 
   namenode:
     build:
@@ -279,11 +293,13 @@ services:
     container_name: secur_namenode
     environment:
       HDFS_ROLE: namenode
+      HADOOP_HEAPSIZE_MAX: ${HADOOP_NAMENODE_HEAP:-256m}
     ports:
       - "8020:8020"
       - "9870:9870"
     volumes:
       - hdfs_namenode_data:/hadoop/dfs/name
+    mem_limit: ${HADOOP_NAMENODE_MEM_LIMIT:-512m}
 
   datanode-1:
     image: secur-sn/hadoop-runtime:local
@@ -292,8 +308,10 @@ services:
       - namenode
     environment:
       HDFS_ROLE: datanode
+      HADOOP_HEAPSIZE_MAX: ${HADOOP_DATANODE_HEAP:-192m}
     volumes:
       - hdfs_datanode_1_data:/hadoop/dfs/data
+    mem_limit: ${HADOOP_DATANODE_MEM_LIMIT:-384m}
 
   datanode-2:
     image: secur-sn/hadoop-runtime:local
@@ -302,8 +320,10 @@ services:
       - namenode
     environment:
       HDFS_ROLE: datanode
+      HADOOP_HEAPSIZE_MAX: ${HADOOP_DATANODE_HEAP:-192m}
     volumes:
       - hdfs_datanode_2_data:/hadoop/dfs/data
+    mem_limit: ${HADOOP_DATANODE_MEM_LIMIT:-384m}
 
   hdfs-init:
     build:
@@ -318,6 +338,7 @@ services:
     environment:
       HDFS_READY_TIMEOUT_SECONDS: ${HDFS_READY_TIMEOUT_SECONDS:-600}
       HDFS_REQUIRED_DATANODES: ${HDFS_REQUIRED_DATANODES:-2}
+    mem_limit: ${INIT_MEM_LIMIT:-96m}
     restart: "no"
 
   hbase:
@@ -331,6 +352,7 @@ services:
     volumes:
       - hbase_data:/hbase-data
     cpus: ${HBASE_CPU_LIMIT:-0.75}
+    mem_limit: ${HBASE_MEM_LIMIT:-896m}
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'host=$$(hostname -i); >/dev/tcp/$$host/16000 && >/dev/tcp/127.0.0.1/9090'"]
       interval: 5s
@@ -352,6 +374,7 @@ services:
       retries: 30
     volumes:
       - hive_postgres_data:/var/lib/postgresql/data
+    mem_limit: ${HIVE_POSTGRES_MEM_LIMIT:-192m}
 
   hive-metastore:
     build:
@@ -374,9 +397,11 @@ services:
         -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-postgres:5432/${HIVE_METASTORE_DB:-hive_metastore}
         -Djavax.jdo.option.ConnectionUserName=${HIVE_METASTORE_USER:-hive}
         -Djavax.jdo.option.ConnectionPassword=${HIVE_METASTORE_PASSWORD:-hive_metastore_password}
+        ${HIVE_METASTORE_SERVICE_OPTS:--Xmx320m}
     ports:
       - "9083:9083"
     cpus: ${HIVE_METASTORE_CPU_LIMIT:-0.5}
+    mem_limit: ${HIVE_METASTORE_MEM_LIMIT:-512m}
 
   hive-server:
     image: secur-sn/hive-runtime:local
@@ -395,6 +420,7 @@ services:
       - "10000:10000"
       - "10002:10002"
     cpus: ${HIVE_SERVER_CPU_LIMIT:-0.5}
+    mem_limit: ${HIVE_SERVER_MEM_LIMIT:-768m}
 
   hive-init:
     build:
@@ -411,6 +437,7 @@ services:
       HIVE_CATALOG_REFRESH_SECONDS: ${HIVE_CATALOG_REFRESH_SECONDS:-60}
       HIVE_DOCKER_HOST: hive-server
       HIVE_PORT: 10000
+    mem_limit: ${INIT_MEM_LIMIT:-96m}
     restart: unless-stopped
 
   platform-ready:
@@ -445,6 +472,7 @@ services:
     environment:
       PLATFORM_READY_RETRY_SECONDS: ${PLATFORM_READY_RETRY_SECONDS:-5}
       PLATFORM_READY_TIMEOUT_SECONDS: ${PLATFORM_READY_TIMEOUT_SECONDS:-1200}
+    mem_limit: ${INIT_MEM_LIMIT:-96m}
     restart: "no"
     volumes:
       - ./data:/opt/secur-sn/data:ro
